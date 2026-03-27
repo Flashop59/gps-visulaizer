@@ -12,7 +12,7 @@ st.set_page_config(page_title="GPS Travel Visualizer", layout="wide")
 # =========================================================
 MAPBOX_TOKEN = "pk.eyJ1IjoiZmxhc2hvcDAwNyIsImEiOiJjbW44a2s5MzcwYm5vMnFzZGloMGpodDI2In0.HO3qwCL8N4YSH3PmwVc3mw"
 
-# Default Mapbox style
+# Map style
 MAP_STYLE = "mapbox://styles/mapbox/streets-v12"
 
 # Accepted Excel column names
@@ -113,9 +113,11 @@ def init_state(total_points: int):
     if "last_file_name" not in st.session_state:
         st.session_state.last_file_name = ""
     if "speed_ms" not in st.session_state:
-        st.session_state.speed_ms = 800
+        st.session_state.speed_ms = 200   # 4x faster than earlier 800
     if "trail_points" not in st.session_state:
         st.session_state.trail_points = 10
+    if "tick_counter" not in st.session_state:
+        st.session_state.tick_counter = 0
 
     if total_points > 0:
         st.session_state.play_index = max(1, min(st.session_state.play_index, total_points))
@@ -130,7 +132,6 @@ def get_visible_points(points: pd.DataFrame, play_index: int, trail_points: int)
 def build_map(
     all_points: pd.DataFrame,
     visible_points: pd.DataFrame,
-    play_index: int,
     show_full_route: bool,
 ) -> pdk.Deck:
     center_lat, center_lng = compute_center(all_points)
@@ -138,6 +139,7 @@ def build_map(
 
     layers = []
 
+    # Full background route
     if show_full_route and len(all_points) >= 2:
         full_path_data = pd.DataFrame(
             {
@@ -148,13 +150,14 @@ def build_map(
             "PathLayer",
             data=full_path_data,
             get_path="path",
-            get_width=3,
-            width_min_pixels=2,
-            get_color=[160, 160, 160, 120],
+            get_width=2,
+            width_min_pixels=1,
+            get_color=[170, 170, 170, 90],
             pickable=False,
         )
         layers.append(full_path_layer)
 
+    # Red travelled route
     if len(visible_points) >= 2:
         travel_path_data = pd.DataFrame(
             {
@@ -165,9 +168,9 @@ def build_map(
             "PathLayer",
             data=travel_path_data,
             get_path="path",
-            get_width=5,
-            width_min_pixels=3,
-            get_color=[0, 128, 255, 220],
+            get_width=4,
+            width_min_pixels=2,
+            get_color=[255, 0, 0, 230],
             pickable=False,
         )
         layers.append(travel_path_layer)
@@ -176,35 +179,37 @@ def build_map(
         past_points = visible_points.iloc[:-1].copy()
         current_point = visible_points.iloc[[-1]].copy()
 
+        # Smaller past points
         if not past_points.empty:
             past_layer = pdk.Layer(
                 "ScatterplotLayer",
                 data=past_points,
                 get_position="[lng, lat]",
-                get_radius=18,
-                radius_min_pixels=4,
-                radius_max_pixels=8,
+                get_radius=8,
+                radius_min_pixels=2,
+                radius_max_pixels=4,
                 pickable=True,
                 stroked=True,
                 filled=True,
                 line_width_min_pixels=1,
-                get_fill_color=[255, 165, 0, 150],
-                get_line_color=[255, 255, 255, 200],
+                get_fill_color=[255, 165, 0, 140],
+                get_line_color=[255, 255, 255, 180],
             )
             layers.append(past_layer)
 
+        # Smaller current point
         current_layer = pdk.Layer(
             "ScatterplotLayer",
             data=current_point,
             get_position="[lng, lat]",
-            get_radius=28,
-            radius_min_pixels=8,
-            radius_max_pixels=12,
+            get_radius=12,
+            radius_min_pixels=4,
+            radius_max_pixels=6,
             pickable=True,
             stroked=True,
             filled=True,
-            line_width_min_pixels=2,
-            get_fill_color=[255, 0, 0, 220],
+            line_width_min_pixels=1,
+            get_fill_color=[255, 0, 0, 230],
             get_line_color=[255, 255, 255, 255],
         )
         layers.append(current_layer)
@@ -214,10 +219,10 @@ def build_map(
             data=visible_points,
             get_position="[lng, lat]",
             get_text="point_no",
-            get_size=14,
+            get_size=12,
             get_color=[0, 0, 0, 255],
             get_alignment_baseline="bottom",
-            get_pixel_offset=[0, -14],
+            get_pixel_offset=[0, -10],
         )
         layers.append(text_layer)
 
@@ -237,9 +242,9 @@ def build_map(
     return deck
 
 
-# ======================
+# =========================================================
 # UI
-# ======================
+# =========================================================
 
 st.title("GPS Travel Visualizer")
 st.caption("Upload Excel, plot GPS points, and play the route step by step.")
@@ -294,21 +299,21 @@ if points.empty:
 
 init_state(len(points))
 
-# Reset animation when a new file is uploaded
 if st.session_state.last_file_name != uploaded_file.name:
     st.session_state.last_file_name = uploaded_file.name
     st.session_state.play_index = 1
     st.session_state.is_playing = False
+    st.session_state.tick_counter = 0
 
 with st.sidebar:
     st.header("Animation Controls")
 
     speed_ms = st.slider(
         "Animation speed (milliseconds per step)",
-        min_value=100,
-        max_value=3000,
+        min_value=50,
+        max_value=1000,
         value=st.session_state.speed_ms,
-        step=100,
+        step=50,
     )
     st.session_state.speed_ms = speed_ms
 
@@ -331,6 +336,7 @@ with st.sidebar:
     if c3.button("Reset", use_container_width=True):
         st.session_state.is_playing = False
         st.session_state.play_index = 1
+        st.session_state.tick_counter = 0
         st.rerun()
 
 manual_index = st.slider(
@@ -363,7 +369,6 @@ st.subheader("Map View")
 deck = build_map(
     all_points=points,
     visible_points=visible_points,
-    play_index=st.session_state.play_index,
     show_full_route=show_full_route,
 )
 st.pydeck_chart(deck, use_container_width=True)
@@ -375,13 +380,10 @@ st.info(
     f"Longitude: {current_row['lng']:.6f}"
 )
 
-@st.fragment(run_every=0.2)
+@st.fragment(run_every=0.05)
 def autoplay():
     if st.session_state.is_playing:
-        target_interval_ticks = max(1, int(st.session_state.speed_ms / 200))
-        if "tick_counter" not in st.session_state:
-            st.session_state.tick_counter = 0
-
+        target_interval_ticks = max(1, int(st.session_state.speed_ms / 50))
         st.session_state.tick_counter += 1
 
         if st.session_state.tick_counter >= target_interval_ticks:
