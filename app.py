@@ -12,7 +12,7 @@ st.set_page_config(page_title="GPS Travel Visualizer", layout="wide")
 # =========================================================
 MAPBOX_TOKEN = "pk.eyJ1IjoiZmxhc2hvcDAwNyIsImEiOiJjbW44a2s5MzcwYm5vMnFzZGloMGpodDI2In0.HO3qwCL8N4YSH3PmwVc3mw"
 
-# Map style
+# Optional map style
 MAP_STYLE = "mapbox://styles/mapbox/streets-v12"
 
 # Accepted Excel column names
@@ -105,19 +105,19 @@ def make_sample_excel() -> bytes:
     return buffer.getvalue()
 
 
-def init_state(total_points: int):
+def init_state(total_points: int) -> None:
     if "play_index" not in st.session_state:
         st.session_state.play_index = 1
     if "is_playing" not in st.session_state:
         st.session_state.is_playing = False
     if "last_file_name" not in st.session_state:
         st.session_state.last_file_name = ""
-    if "speed_ms" not in st.session_state:
-        st.session_state.speed_ms = 200   # 4x faster than earlier 800
+    if "pps" not in st.session_state:
+        st.session_state.pps = 10
     if "trail_points" not in st.session_state:
         st.session_state.trail_points = 10
-    if "tick_counter" not in st.session_state:
-        st.session_state.tick_counter = 0
+    if "pps_accumulator" not in st.session_state:
+        st.session_state.pps_accumulator = 0.0
 
     if total_points > 0:
         st.session_state.play_index = max(1, min(st.session_state.play_index, total_points))
@@ -139,7 +139,7 @@ def build_map(
 
     layers = []
 
-    # Full background route
+    # Background full route
     if show_full_route and len(all_points) >= 2:
         full_path_data = pd.DataFrame(
             {
@@ -150,14 +150,14 @@ def build_map(
             "PathLayer",
             data=full_path_data,
             get_path="path",
-            get_width=2,
+            get_width=1,
             width_min_pixels=1,
-            get_color=[170, 170, 170, 90],
+            get_color=[160, 160, 160, 80],
             pickable=False,
         )
         layers.append(full_path_layer)
 
-    # Red travelled route
+    # Travelled red route - thinner
     if len(visible_points) >= 2:
         travel_path_data = pd.DataFrame(
             {
@@ -168,8 +168,8 @@ def build_map(
             "PathLayer",
             data=travel_path_data,
             get_path="path",
-            get_width=4,
-            width_min_pixels=2,
+            get_width=1,
+            width_min_pixels=1,
             get_color=[255, 0, 0, 230],
             pickable=False,
         )
@@ -179,7 +179,6 @@ def build_map(
         past_points = visible_points.iloc[:-1].copy()
         current_point = visible_points.iloc[[-1]].copy()
 
-        # Smaller past points
         if not past_points.empty:
             past_layer = pdk.Layer(
                 "ScatterplotLayer",
@@ -197,7 +196,6 @@ def build_map(
             )
             layers.append(past_layer)
 
-        # Smaller current point
         current_layer = pdk.Layer(
             "ScatterplotLayer",
             data=current_point,
@@ -303,19 +301,19 @@ if st.session_state.last_file_name != uploaded_file.name:
     st.session_state.last_file_name = uploaded_file.name
     st.session_state.play_index = 1
     st.session_state.is_playing = False
-    st.session_state.tick_counter = 0
+    st.session_state.pps_accumulator = 0.0
 
 with st.sidebar:
     st.header("Animation Controls")
 
-    speed_ms = st.slider(
-        "Animation speed (milliseconds per step)",
-        min_value=50,
-        max_value=1000,
-        value=st.session_state.speed_ms,
-        step=50,
+    pps = st.slider(
+        "Animation speed (points per second)",
+        min_value=1,
+        max_value=50,
+        value=st.session_state.pps,
+        step=1,
     )
-    st.session_state.speed_ms = speed_ms
+    st.session_state.pps = pps
 
     trail_points = st.slider(
         "Visible trail points",
@@ -336,7 +334,7 @@ with st.sidebar:
     if c3.button("Reset", use_container_width=True):
         st.session_state.is_playing = False
         st.session_state.play_index = 1
-        st.session_state.tick_counter = 0
+        st.session_state.pps_accumulator = 0.0
         st.rerun()
 
 manual_index = st.slider(
@@ -380,18 +378,20 @@ st.info(
     f"Longitude: {current_row['lng']:.6f}"
 )
 
-@st.fragment(run_every=0.05)
+@st.fragment(run_every=0.02)
 def autoplay():
     if st.session_state.is_playing:
-        target_interval_ticks = max(1, int(st.session_state.speed_ms / 50))
-        st.session_state.tick_counter += 1
+        points_per_tick = st.session_state.pps * 0.02
+        st.session_state.pps_accumulator += points_per_tick
 
-        if st.session_state.tick_counter >= target_interval_ticks:
-            st.session_state.tick_counter = 0
-            if st.session_state.play_index < len(points):
-                st.session_state.play_index += 1
-                st.rerun()
-            else:
+        advance = int(st.session_state.pps_accumulator)
+        if advance > 0:
+            st.session_state.pps_accumulator -= advance
+            st.session_state.play_index = min(len(points), st.session_state.play_index + advance)
+
+            if st.session_state.play_index >= len(points):
                 st.session_state.is_playing = False
+
+            st.rerun()
 
 autoplay()
