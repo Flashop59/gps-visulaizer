@@ -118,6 +118,8 @@ def init_state(total_points: int) -> None:
         st.session_state.trail_points = 10
     if "pps_accumulator" not in st.session_state:
         st.session_state.pps_accumulator = 0.0
+    if "view_mode" not in st.session_state:
+        st.session_state.view_mode = "Show all points"
 
     if total_points > 0:
         st.session_state.play_index = max(1, min(st.session_state.play_index, total_points))
@@ -131,20 +133,19 @@ def get_visible_points(points: pd.DataFrame, play_index: int, trail_points: int)
 
 def build_map(
     all_points: pd.DataFrame,
-    visible_points: pd.DataFrame,
-    show_full_route: bool,
+    route_points: pd.DataFrame,
+    point_points: pd.DataFrame,
+    current_point: Optional[pd.DataFrame],
+    show_background_route: bool,
 ) -> pdk.Deck:
     center_lat, center_lng = compute_center(all_points)
     zoom = estimate_zoom(all_points)
 
     layers = []
 
-    # Background full route
-    if show_full_route and len(all_points) >= 2:
+    if show_background_route and len(all_points) >= 2:
         full_path_data = pd.DataFrame(
-            {
-                "path": [[row[["lng", "lat"]].tolist() for _, row in all_points.iterrows()]]
-            }
+            {"path": [[row[["lng", "lat"]].tolist() for _, row in all_points.iterrows()]]}
         )
         full_path_layer = pdk.Layer(
             "PathLayer",
@@ -157,45 +158,51 @@ def build_map(
         )
         layers.append(full_path_layer)
 
-    # Travelled red route - thinner
-    if len(visible_points) >= 2:
-        travel_path_data = pd.DataFrame(
-            {
-                "path": [[row[["lng", "lat"]].tolist() for _, row in visible_points.iterrows()]]
-            }
+    if len(route_points) >= 2:
+        route_path_data = pd.DataFrame(
+            {"path": [[row[["lng", "lat"]].tolist() for _, row in route_points.iterrows()]]}
         )
-        travel_path_layer = pdk.Layer(
+        route_path_layer = pdk.Layer(
             "PathLayer",
-            data=travel_path_data,
+            data=route_path_data,
             get_path="path",
             get_width=1,
             width_min_pixels=1,
             get_color=[255, 0, 0, 230],
             pickable=False,
         )
-        layers.append(travel_path_layer)
+        layers.append(route_path_layer)
 
-    if not visible_points.empty:
-        past_points = visible_points.iloc[:-1].copy()
-        current_point = visible_points.iloc[[-1]].copy()
+    if not point_points.empty:
+        points_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=point_points,
+            get_position="[lng, lat]",
+            get_radius=8,
+            radius_min_pixels=2,
+            radius_max_pixels=4,
+            pickable=True,
+            stroked=True,
+            filled=True,
+            line_width_min_pixels=1,
+            get_fill_color=[255, 165, 0, 140],
+            get_line_color=[255, 255, 255, 180],
+        )
+        layers.append(points_layer)
 
-        if not past_points.empty:
-            past_layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=past_points,
-                get_position="[lng, lat]",
-                get_radius=8,
-                radius_min_pixels=2,
-                radius_max_pixels=4,
-                pickable=True,
-                stroked=True,
-                filled=True,
-                line_width_min_pixels=1,
-                get_fill_color=[255, 165, 0, 140],
-                get_line_color=[255, 255, 255, 180],
-            )
-            layers.append(past_layer)
+        text_layer = pdk.Layer(
+            "TextLayer",
+            data=point_points,
+            get_position="[lng, lat]",
+            get_text="point_no",
+            get_size=12,
+            get_color=[0, 0, 0, 255],
+            get_alignment_baseline="bottom",
+            get_pixel_offset=[0, -10],
+        )
+        layers.append(text_layer)
 
+    if current_point is not None and not current_point.empty:
         current_layer = pdk.Layer(
             "ScatterplotLayer",
             data=current_point,
@@ -211,18 +218,6 @@ def build_map(
             get_line_color=[255, 255, 255, 255],
         )
         layers.append(current_layer)
-
-        text_layer = pdk.Layer(
-            "TextLayer",
-            data=visible_points,
-            get_position="[lng, lat]",
-            get_text="point_no",
-            get_size=12,
-            get_color=[0, 0, 0, 255],
-            get_alignment_baseline="bottom",
-            get_pixel_offset=[0, -10],
-        )
-        layers.append(text_layer)
 
     deck = pdk.Deck(
         layers=layers,
@@ -240,12 +235,8 @@ def build_map(
     return deck
 
 
-# =========================================================
-# UI
-# =========================================================
-
 st.title("GPS Travel Visualizer")
-st.caption("Upload Excel, plot GPS points, and play the route step by step.")
+st.caption("Upload Excel and switch between full route view and animated travel view.")
 
 with st.sidebar:
     st.header("Setup")
@@ -302,63 +293,91 @@ if st.session_state.last_file_name != uploaded_file.name:
     st.session_state.play_index = 1
     st.session_state.is_playing = False
     st.session_state.pps_accumulator = 0.0
+    st.session_state.view_mode = "Show all points"
 
 with st.sidebar:
-    st.header("Animation Controls")
+    st.header("View Mode")
 
-    pps = st.slider(
-        "Animation speed (points per second)",
-        min_value=1,
-        max_value=50,
-        value=st.session_state.pps,
-        step=1,
+    view_mode = st.radio(
+        "Map display mode",
+        options=["Show all points", "Show animation"],
+        index=0 if st.session_state.view_mode == "Show all points" else 1,
     )
-    st.session_state.pps = pps
-
-    trail_points = st.slider(
-        "Visible trail points",
-        min_value=1,
-        max_value=min(len(points), 100),
-        value=min(st.session_state.trail_points, len(points)),
-        step=1,
-    )
-    st.session_state.trail_points = trail_points
+    st.session_state.view_mode = view_mode
 
     show_full_route = st.checkbox("Show full route in background", value=True)
 
-    c1, c2, c3 = st.columns(3)
-    if c1.button("Play", use_container_width=True):
-        st.session_state.is_playing = True
-    if c2.button("Pause", use_container_width=True):
+    if st.session_state.view_mode == "Show animation":
+        st.header("Animation Controls")
+
+        pps = st.slider(
+            "Animation speed (points per second)",
+            min_value=1,
+            max_value=50,
+            value=st.session_state.pps,
+            step=1,
+        )
+        st.session_state.pps = pps
+
+        trail_points = st.slider(
+            "Visible trail points",
+            min_value=1,
+            max_value=min(len(points), 100),
+            value=min(st.session_state.trail_points, len(points)),
+            step=1,
+        )
+        st.session_state.trail_points = trail_points
+
+        c1, c2, c3 = st.columns(3)
+        if c1.button("Play", use_container_width=True):
+            st.session_state.is_playing = True
+        if c2.button("Pause", use_container_width=True):
+            st.session_state.is_playing = False
+        if c3.button("Reset", use_container_width=True):
+            st.session_state.is_playing = False
+            st.session_state.play_index = 1
+            st.session_state.pps_accumulator = 0.0
+            st.rerun()
+    else:
         st.session_state.is_playing = False
-    if c3.button("Reset", use_container_width=True):
-        st.session_state.is_playing = False
-        st.session_state.play_index = 1
-        st.session_state.pps_accumulator = 0.0
-        st.rerun()
 
-manual_index = st.slider(
-    "Travel progress point",
-    min_value=1,
-    max_value=len(points),
-    value=st.session_state.play_index,
-    step=1,
-)
+if st.session_state.view_mode == "Show animation":
+    manual_index = st.slider(
+        "Travel progress point",
+        min_value=1,
+        max_value=len(points),
+        value=st.session_state.play_index,
+        step=1,
+    )
 
-if manual_index != st.session_state.play_index and not st.session_state.is_playing:
-    st.session_state.play_index = manual_index
+    if manual_index != st.session_state.play_index and not st.session_state.is_playing:
+        st.session_state.play_index = manual_index
 
-visible_points = get_visible_points(
-    points=points,
-    play_index=st.session_state.play_index,
-    trail_points=st.session_state.trail_points,
-)
+    visible_points = get_visible_points(
+        points=points,
+        play_index=st.session_state.play_index,
+        trail_points=st.session_state.trail_points,
+    )
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Points", len(points))
-col2.metric("Current Point", st.session_state.play_index)
-col3.metric("Trail Size", len(visible_points))
-col4.metric("Progress", f"{(st.session_state.play_index / len(points)) * 100:.1f}%")
+    past_points = visible_points.iloc[:-1].copy() if len(visible_points) > 1 else visible_points.iloc[0:0].copy()
+    current_point = visible_points.iloc[[-1]].copy() if not visible_points.empty else None
+    route_points = visible_points.copy()
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Points", len(points))
+    col2.metric("Current Point", st.session_state.play_index)
+    col3.metric("Trail Size", len(visible_points))
+    col4.metric("Progress", f"{(st.session_state.play_index / len(points)) * 100:.1f}%")
+
+else:
+    route_points = points.copy()
+    past_points = points.copy()
+    current_point = None
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Points", len(points))
+    col2.metric("Route Segments", max(len(points) - 1, 0))
+    col3.metric("Map Center", f"{points['lat'].mean():.4f}, {points['lng'].mean():.4f}")
 
 st.subheader("Uploaded Data")
 st.dataframe(points, use_container_width=True)
@@ -366,21 +385,26 @@ st.dataframe(points, use_container_width=True)
 st.subheader("Map View")
 deck = build_map(
     all_points=points,
-    visible_points=visible_points,
-    show_full_route=show_full_route,
+    route_points=route_points,
+    point_points=past_points,
+    current_point=current_point,
+    show_background_route=show_full_route,
 )
 st.pydeck_chart(deck, use_container_width=True)
 
-current_row = points.iloc[st.session_state.play_index - 1]
-st.info(
-    f"Current point: {int(current_row['point_no'])} | "
-    f"Latitude: {current_row['lat']:.6f} | "
-    f"Longitude: {current_row['lng']:.6f}"
-)
+if st.session_state.view_mode == "Show animation":
+    current_row = points.iloc[st.session_state.play_index - 1]
+    st.info(
+        f"Current point: {int(current_row['point_no'])} | "
+        f"Latitude: {current_row['lat']:.6f} | "
+        f"Longitude: {current_row['lng']:.6f}"
+    )
+else:
+    st.info("Showing all points and full travelled route together.")
 
 @st.fragment(run_every=0.02)
 def autoplay():
-    if st.session_state.is_playing:
+    if st.session_state.view_mode == "Show animation" and st.session_state.is_playing:
         points_per_tick = st.session_state.pps * 0.02
         st.session_state.pps_accumulator += points_per_tick
 
